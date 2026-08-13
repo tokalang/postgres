@@ -133,15 +133,17 @@ compiler, runtime, OpenSSL, Docker, or loopback publication writes a
 
 ## Repository migration
 
-This repository has completed deterministic Linux/macOS qualification and the
-PostgreSQL 16/17 real-service gate. Its `v0.1.0` tag, immutable catalog entry,
-and locked registry consumer replay form the one-way cutover gate. Until that
-gate is complete, the authoritative source remains
-[`tokalang/toka/official/postgres`](https://github.com/tokalang/toka/tree/main/official/postgres).
+The one-way cutover completed on 2026-08-13. This repository is now the
+canonical source for `official/postgres`; the former compiler-repository copy
+has been retired rather than retained as a mirror or submodule. The completed
+cutover evidence is:
 
-Cutover will be one-way. The compiler repository copy will be removed only
-after the existing service consumers have moved to the released, locked
-package; this repository will not become a long-lived mirror or submodule.
+- the immutable [`v0.1.0` release](https://github.com/tokalang/postgres/releases/tag/v0.1.0);
+- the verified `postgres@0.1.0` entry in the
+  [public catalog](https://pkg.tokalang.dev/catalog.json);
+- the locked online/offline
+  [`registry_postgres_consumer`](https://github.com/tokalang/toka-examples/tree/main/registry_postgres_consumer)
+  replay.
 
 The history was imported with `git subtree split` from
 `tokalang/toka@07d86771cc5b28d73f75e8ab560284315a904685`, path
