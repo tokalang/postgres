@@ -95,3 +95,54 @@ jobs:
 
       - name: Run standalone qualification
         run: python3 tests/qualify_package.py
+
+  real-service:
+    name: Real service (PostgreSQL 16/17)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install native dependencies
+        run: |
+          set -euo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+          sudo -E apt-get update -o Acquire::Retries=5
+          sudo apt-get install -y curl libssl-dev lsb-release pkg-config \
+            software-properties-common wget
+          wget --timeout=15 --tries=3 https://apt.llvm.org/llvm.sh
+          chmod +x llvm.sh
+          sudo -E ./llvm.sh 20
+          echo "/usr/lib/llvm-20/bin" >> "$GITHUB_PATH"
+          echo "CC=clang-20" >> "$GITHUB_ENV"
+
+      - name: Install locked Toka SDK
+        env:
+          TOKA_ASSET: toka-v1.0.0-rc.4-linux-x64.tar.gz
+          TOKA_ASSET_SHA256: fee16678f67bb88ace9b0f31603f9b56a24802de6d16a5bca60b3714dd4d30f6
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/$TOKA_ASSET"
+          curl --fail --location --retry 3 \
+            --output "$archive" \
+            "https://github.com/tokalang/toka/releases/download/$TOKA_VERSION/$TOKA_ASSET"
+          python3 -c 'import hashlib, pathlib, sys; actual = hashlib.sha256(pathlib.Path(sys.argv[1]).read_bytes()).hexdigest(); expected = sys.argv[2]; assert actual == expected, f"SHA-256 mismatch: {actual} != {expected}"' \
+            "$archive" "$TOKA_ASSET_SHA256"
+          tar -xzf "$archive" -C "$RUNNER_TEMP"
+          sdk="$RUNNER_TEMP/${TOKA_ASSET%.tar.gz}"
+          test -x "$sdk/bin/tokac"
+          test -f "$sdk/lib/sys/toka_rt.o"
+          echo "TOKAC=$sdk/bin/tokac" >> "$GITHUB_ENV"
+          echo "TOKA_LIB=$sdk/lib" >> "$GITHUB_ENV"
+
+      - name: Run real-service qualification
+        run: python3 tests/qualify_real_service.py --report build/postgres-real-service.json
+
+      - name: Upload fail-closed evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: postgres-real-service
+          path: build/postgres-real-service.json
+          if-no-files-found: error
