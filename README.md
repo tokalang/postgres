@@ -1,4 +1,7 @@
-# `official/postgres` v1
+# `official/postgres`
+
+Official opt-in PostgreSQL package for Toka. Package version `0.1.0` is the
+first standalone release line. This document describes API profile v1.
 
 Status: **bounded PostgreSQL v3 wire codec, ASCII-profile SCRAM-SHA-256,
 secure startup client, serial queries, prepared statements, transactions, and
@@ -130,9 +133,10 @@ compiler, runtime, OpenSSL, Docker, or loopback publication writes a
 
 ## Repository migration
 
-This repository is undergoing standalone qualification and is not yet the
-canonical package source. Until qualification, release, and locked registry
-consumer replay are complete, the authoritative source remains
+This repository has completed deterministic Linux/macOS qualification and the
+PostgreSQL 16/17 real-service gate. Its `v0.1.0` tag, immutable catalog entry,
+and locked registry consumer replay form the one-way cutover gate. Until that
+gate is complete, the authoritative source remains
 [`tokalang/toka/official/postgres`](https://github.com/tokalang/toka/tree/main/official/postgres).
 
 Cutover will be one-way. The compiler repository copy will be removed only
