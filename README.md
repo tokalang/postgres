@@ -114,14 +114,19 @@ successful local Docker run is maintainer evidence, while Linux CI records the
 release-gate artifact. A runner that cannot publish loopback ports is reported
 as `not-run`, never as a passing package test.
 
-```text
-python3 tools/scripts/qualify_data_access_real.py --tokac build/bin/tokac --report build/data-access-real-service.json
+```sh
+TOKAC=/path/to/bin/tokac \
+TOKA_LIB=/path/to/lib \
+python3 tests/qualify_real_service.py \
+  --report build/postgres-real-service.json
 ```
 
-Run that command from the Toka repository root. This standalone repository
-does not yet own or copy the real-service runner; its exact scope and artifact
-policy remain with the canonical source until that runner is migrated and
-qualified separately.
+The runner compiles this checkout's `tests/real_service_v1.tk`, then tests the
+current `postgres:16-bookworm` and `postgres:17-bookworm` images. Missing
+compiler, runtime, OpenSSL, Docker, or loopback publication writes a
+`status: not-run` report and exits 2. A failed compatibility check writes
+`status: failed` and exits 1; only the complete two-version matrix writes
+`status: passed` and exits 0.
 
 ## Repository migration
 
