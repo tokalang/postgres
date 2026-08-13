@@ -85,17 +85,28 @@ the pool, while dropping an active transaction closes and discards it.
 
 ## Qualification
 
-Run from this package root:
+The required qualification toolchain is the published Toka `v1.0.0-rc.4` SDK.
+Install OpenSSL, pkg-config, and Clang, then provide either an installed SDK
+explicitly:
 
-```text
-../../build/bin/tokac -I ../../lib -I lib tests/protocol_v1.tk -o /tmp/postgres_protocol_v1 && /tmp/postgres_protocol_v1
-../../build/bin/tokac -I ../../lib -I lib tests/client_v1.tk -o /tmp/postgres_client_v1 && /tmp/postgres_client_v1
-../../build/bin/tokac -I ../../lib -I lib tests/query_v1.tk -o /tmp/postgres_query_v1 && /tmp/postgres_query_v1
-../../build/bin/tokac -I ../../lib -I lib tests/extended_v1.tk -o /tmp/postgres_extended_v1 && /tmp/postgres_extended_v1
-../../build/bin/tokac -I ../../lib -I lib tests/pool_v1.tk -o /tmp/postgres_pool_v1 && /tmp/postgres_pool_v1
-../../build/bin/tokac -I ../../lib -I lib tests/pool_extended_v1.tk -o /tmp/postgres_pool_extended_v1 && /tmp/postgres_pool_extended_v1
+```sh
+TOKA=/path/to/bin/toka \
+TOKAC=/path/to/bin/tokac \
+TOKA_LIB=/path/to/lib \
 python3 tests/qualify_package.py
 ```
+
+or a Toka source checkout whose `build/bin/toka`, `build/bin/tokac`, and
+`lib/sys/toka_rt.o` have already been built:
+
+```sh
+TOKA_ROOT=/path/to/toka python3 tests/qualify_package.py
+```
+
+Qualification builds and runs all six deterministic protocol, client, query,
+extended-query, and pool suites. It then performs a first local path fetch,
+replays the resulting lock with `TOKA_OFFLINE=1`, and builds and runs an
+isolated public-import consumer.
 
 Real-service compatibility is a separate fail-closed Docker qualification. It
 verifies PostgreSQL 16.x and 17.x with private-CA TLS and SCRAM-SHA-256; a
@@ -107,16 +118,21 @@ as `not-run`, never as a passing package test.
 python3 tools/scripts/qualify_data_access_real.py --tokac build/bin/tokac --report build/data-access-real-service.json
 ```
 
-Run that command from the Toka repository root. The exact scope and artifact
-policy remain with the canonical source until the standalone runner is
-qualified.
+Run that command from the Toka repository root. This standalone repository
+does not yet own or copy the real-service runner; its exact scope and artifact
+policy remain with the canonical source until that runner is migrated and
+qualified separately.
 
 ## Repository migration
 
-This repository has imported the package history but is not yet the canonical
-package source. Until standalone qualification, release, and registry consumer
-replay are complete, the authoritative source remains
+This repository is undergoing standalone qualification and is not yet the
+canonical package source. Until qualification, release, and locked registry
+consumer replay are complete, the authoritative source remains
 [`tokalang/toka/official/postgres`](https://github.com/tokalang/toka/tree/main/official/postgres).
+
+Cutover will be one-way. The compiler repository copy will be removed only
+after the existing service consumers have moved to the released, locked
+package; this repository will not become a long-lived mirror or submodule.
 
 The history was imported with `git subtree split` from
 `tokalang/toka@07d86771cc5b28d73f75e8ab560284315a904685`, path

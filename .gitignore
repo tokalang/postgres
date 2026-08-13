@@ -1,0 +1,7 @@
+.DS_Store
+.toka/
+target/
+__pycache__/
+*.py[cod]
+**/.toka_build_exe
+**/.toka_build_exe.exe

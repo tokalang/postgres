@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify official/postgres through locked local and offline package paths."""
+"""Qualify official/postgres deterministic suites and a locked package consumer."""
 
 from __future__ import annotations
 
@@ -11,33 +11,97 @@ import subprocess
 import tempfile
 
 
-ROOT = Path(__file__).resolve().parents[3]
-PACKAGE = ROOT / "official" / "postgres"
+PACKAGE = Path(__file__).resolve().parents[1]
 
 
 class QualificationError(RuntimeError):
     pass
 
 
-def run(argv: list[str], *, cwd: Path, env: dict[str, str]) -> None:
-    result = subprocess.run(argv, cwd=cwd, env=env, text=True,
-                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                            timeout=120)
+def run(argv: list[str], *, cwd: Path,
+        env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    result = subprocess.run(
+        argv,
+        cwd=cwd,
+        env=env,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=120,
+    )
     if result.returncode != 0:
         raise QualificationError(
-            "command failed: %s\nstdout:\n%s\nstderr:\n%s"
-            % (" ".join(argv), result.stdout, result.stderr)
+            "command failed (%d): %s\nstdout:\n%s\nstderr:\n%s"
+            % (result.returncode, " ".join(argv), result.stdout, result.stderr)
         )
+    return result
 
 
-def make_sdk(work: Path) -> Path:
+def resolve_toolchain(env: dict[str, str]) -> tuple[Path, Path, Path, Path, Path]:
+    root_is_set = "TOKA_ROOT" in env
+    explicit_keys = ("TOKA", "TOKAC", "TOKA_LIB")
+    explicit_set = [key for key in explicit_keys if key in env]
+    if root_is_set and explicit_set:
+        raise QualificationError(
+            "set either TOKA_ROOT or TOKA/TOKAC/TOKA_LIB, not both"
+        )
+    if root_is_set:
+        if not env["TOKA_ROOT"].strip():
+            raise QualificationError("TOKA_ROOT must not be empty")
+        root = Path(env["TOKA_ROOT"]).expanduser().resolve()
+        toka = root / "build" / "bin" / "toka"
+        tokac = root / "build" / "bin" / "tokac"
+        library = root / "lib"
+        runtime = library / "sys" / "toka_rt.o"
+        build_driver = root / "tools" / "scripts" / "toka_build.py"
+    else:
+        if len(explicit_set) != len(explicit_keys):
+            missing = ", ".join(key for key in explicit_keys if key not in env)
+            raise QualificationError(
+                "set TOKA_ROOT or all of TOKA/TOKAC/TOKA_LIB"
+                + (" (missing: " + missing + ")" if missing else "")
+            )
+        empty = [key for key in explicit_keys if not env[key].strip()]
+        if empty:
+            raise QualificationError(
+                "toolchain variables must not be empty: " + ", ".join(empty)
+            )
+        toka = Path(env["TOKA"]).expanduser().resolve()
+        tokac = Path(env["TOKAC"]).expanduser().resolve()
+        library = Path(env["TOKA_LIB"]).expanduser().resolve()
+        runtime = library / "sys" / "toka_rt.o"
+        build_driver = library / "toolchain" / "toka_build.py"
+
+    required_files = {
+        "toka": toka,
+        "tokac": tokac,
+        "toka_rt.o": runtime,
+        "toka_build.py": build_driver,
+    }
+    missing_files = [name for name, path in required_files.items() if not path.is_file()]
+    if not library.is_dir():
+        missing_files.append("TOKA_LIB")
+    if missing_files:
+        raise QualificationError(
+            "incomplete Toka toolchain (missing: %s)" % ", ".join(missing_files)
+        )
+    return toka, tokac, library, runtime, build_driver
+
+
+def make_sdk(work: Path, source_library: Path, runtime: Path,
+             build_driver: Path) -> Path:
     library = work / "sdk" / "lib"
-    shutil.copytree(ROOT / "lib", library)
-    if (ROOT / "build" / "lib" / "sys").is_dir():
-        shutil.copytree(ROOT / "build" / "lib" / "sys", library / "sys", dirs_exist_ok=True)
+    shutil.copytree(
+        source_library,
+        library,
+        ignore=shutil.ignore_patterns("*.pyc", "__pycache__"),
+    )
+    runtime_dir = library / "sys"
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(runtime, runtime_dir / "toka_rt.o")
     toolchain = library / "toolchain"
-    toolchain.mkdir(exist_ok=True)
-    shutil.copy2(ROOT / "tools" / "scripts" / "toka_build.py", toolchain / "toka_build.py")
+    toolchain.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(build_driver, toolchain / "toka_build.py")
     return library
 
 
@@ -84,49 +148,42 @@ def write_consumer(project: Path, dependency: Path) -> None:
 
 
 def main() -> int:
-    toka = ROOT / "build" / "bin" / "toka"
-    tokac = ROOT / "build" / "bin" / "tokac"
-    if not toka.is_file() or not tokac.is_file():
-        raise QualificationError("build toka and tokac before package qualification")
+    host_env = dict(os.environ)
+    toka, tokac, source_library, runtime, build_driver = resolve_toolchain(host_env)
 
     with tempfile.TemporaryDirectory(prefix="toka-postgres-package-") as temporary:
         work = Path(temporary)
-        base_env = dict(os.environ)
-        base_env.update({"TOKAC": str(tokac), "TOKA_LIB": str(make_sdk(work))})
+        sdk = make_sdk(work, source_library, runtime, build_driver)
+        base_env = dict(host_env)
+        base_env.update({"TOKAC": str(tokac), "TOKA_LIB": str(sdk)})
+        base_env.pop("TOKA_ROOT", None)
+        base_env.pop("TOKA", None)
+        base_env.pop("TOKA_OFFLINE", None)
         exec_env = dict(base_env)
         exec_env.pop("TOKA_LIB", None)
-        # tokac currently emits support files beside its output, so keep these
-        # ephemeral executables beneath the repository's existing tmp root.
-        with tempfile.TemporaryDirectory(prefix="postgres-qualify-", dir=ROOT / "tmp") as test_temporary:
-            test_work = Path(test_temporary)
-            protocol = test_work / "protocol_v1"
-            client = test_work / "client_v1"
-            include = ["-I", str(ROOT / "lib"), "-I", str(PACKAGE / "lib")]
-            run([str(tokac), *include, str(PACKAGE / "tests" / "protocol_v1.tk"),
-                 "-o", str(protocol)], cwd=ROOT, env=base_env)
-            run([str(protocol)], cwd=ROOT, env=exec_env)
-            run([str(tokac), *include, str(PACKAGE / "tests" / "client_v1.tk"),
-                 "-o", str(client)], cwd=ROOT, env=base_env)
-            run([str(client)], cwd=ROOT, env=exec_env)
-            query = test_work / "query_v1"
-            run([str(tokac), *include, str(PACKAGE / "tests" / "query_v1.tk"),
-                 "-o", str(query)], cwd=ROOT, env=base_env)
-            run([str(query)], cwd=ROOT, env=exec_env)
-            extended = test_work / "extended_v1"
-            run([str(tokac), *include, str(PACKAGE / "tests" / "extended_v1.tk"),
-                 "-o", str(extended)], cwd=ROOT, env=base_env)
-            run([str(extended)], cwd=ROOT, env=exec_env)
-            pool = test_work / "pool_v1"
-            run([str(tokac), *include, str(PACKAGE / "tests" / "pool_v1.tk"),
-                 "-o", str(pool)], cwd=ROOT, env=base_env)
-            run([str(pool)], cwd=ROOT, env=exec_env)
-            pool_extended = test_work / "pool_extended_v1"
-            run([str(tokac), *include, str(PACKAGE / "tests" / "pool_extended_v1.tk"),
-                 "-o", str(pool_extended)], cwd=ROOT, env=base_env)
-            run([str(pool_extended)], cwd=ROOT, env=exec_env)
-
         dependency = work / "postgres"
-        shutil.copytree(PACKAGE, dependency)
+        shutil.copytree(
+            PACKAGE,
+            dependency,
+            ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc"),
+        )
+
+        include = ["-I", str(sdk), "-I", str(dependency / "lib")]
+        deterministic_suites = (
+            "protocol_v1",
+            "client_v1",
+            "query_v1",
+            "extended_v1",
+            "pool_v1",
+            "pool_extended_v1",
+        )
+        for suite in deterministic_suites:
+            program = work / suite
+            run([str(tokac), *include,
+                 str(dependency / "tests" / (suite + ".tk")),
+                 "-o", str(program)], cwd=PACKAGE, env=base_env)
+            run([str(program)], cwd=PACKAGE, env=exec_env)
+
         project = work / "consumer"
         write_consumer(project, dependency)
 
@@ -142,7 +199,10 @@ def main() -> int:
         if lock.read_bytes() != locked:
             raise QualificationError("offline Postgres fetch changed package.lock")
         run([str(toka), "build"], cwd=project, env=offline_env)
-        run([str(project / "target" / "debug" / "postgres_consumer")], cwd=project, env=offline_env)
+        program = project / "target" / "debug" / "postgres_consumer"
+        if not program.is_file():
+            raise QualificationError("toka build did not produce PostgreSQL consumer")
+        run([str(program)], cwd=project, env=offline_env)
 
     print(json.dumps({
         "result": "pass",
