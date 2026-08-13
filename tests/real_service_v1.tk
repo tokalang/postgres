@@ -1,5 +1,5 @@
-// Contract exercised by tools/scripts/qualify_data_access_real.py against a
-// loopback PostgreSQL service configured for TLS and SCRAM-SHA-256.
+// Contract exercised by tests/qualify_real_service.py against a loopback
+// PostgreSQL service configured for TLS and SCRAM-SHA-256.
 
 import official/postgres::{PostgresConfig, PostgresError, PostgresParam, PostgresPool, PostgresQueryLimits, PostgresQueryResult}
 import core/option::{Option}
