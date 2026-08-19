@@ -17,25 +17,21 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  TOKA_VERSION: v1.0.0-rc.4
+  TOKA_VERSION: main
 
 jobs:
   qualify:
     name: Qualify (${{ matrix.name }})
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 20
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
         include:
           - name: linux-x64
             runner: ubuntu-22.04
-            asset: toka-v1.0.0-rc.4-linux-x64.tar.gz
-            sha256: fee16678f67bb88ace9b0f31603f9b56a24802de6d16a5bca60b3714dd4d30f6
           - name: macos-arm64
             runner: macos-15
-            asset: toka-v1.0.0-rc.4-macos-arm64.tar.gz
-            sha256: f5e9043af6f650bca42e95d22fda28c6814413faa4bf9478decfeb884d4d0866
 
     steps:
       - uses: actions/checkout@v4
@@ -46,11 +42,12 @@ jobs:
           set -euo pipefail
           export DEBIAN_FRONTEND=noninteractive
           sudo -E apt-get update -o Acquire::Retries=5
-          sudo apt-get install -y curl libssl-dev lsb-release pkg-config \
+          sudo apt-get install -y build-essential cmake curl ninja-build lsb-release pkg-config \
             software-properties-common wget
           wget --timeout=15 --tries=3 https://apt.llvm.org/llvm.sh
           chmod +x llvm.sh
           sudo -E ./llvm.sh 20
+          sudo apt-get install -y liblld-20-dev lld-20 libpolly-20-dev libzstd-dev libssl-dev
           echo "/usr/lib/llvm-20/bin" >> "$GITHUB_PATH"
           echo "CC=clang-20" >> "$GITHUB_ENV"
 
@@ -58,41 +55,41 @@ jobs:
         if: runner.os == 'macOS'
         run: |
           set -euo pipefail
-          brew install llvm@20 lld@20 pkgconf zstd openssl@3
-          llvm_prefix="$(brew --prefix llvm@20)"
-          zstd_prefix="$(brew --prefix zstd)"
-          openssl_prefix="$(brew --prefix openssl@3)"
-          echo "$llvm_prefix/bin" >> "$GITHUB_PATH"
-          echo "CC=$llvm_prefix/bin/clang" >> "$GITHUB_ENV"
-          echo "PKG_CONFIG_PATH=$zstd_prefix/lib/pkgconfig:$openssl_prefix/lib/pkgconfig" >> "$GITHUB_ENV"
+          brew install llvm@20 lld@20 pkgconf openssl@3 cmake ninja zstd
+          echo "LLVM_DIR=$(brew --prefix llvm@20)/lib/cmake/llvm" >> "$GITHUB_ENV"
+          echo "LLD_DIR=$(brew --prefix lld@20)/lib/cmake/lld" >> "$GITHUB_ENV"
+          echo "ZSTD_LIBRARY=$(brew --prefix zstd)/lib/libzstd.dylib" >> "$GITHUB_ENV"
+          echo "OPENSSL_ROOT_DIR=$(brew --prefix openssl@3)" >> "$GITHUB_ENV"
+          echo "PKG_CONFIG_PATH=$(brew --prefix openssl@3)/lib/pkgconfig" >> "$GITHUB_ENV"
 
-      - name: Install locked Toka SDK
-        env:
-          TOKA_ASSET: ${{ matrix.asset }}
-          TOKA_ASSET_SHA256: ${{ matrix.sha256 }}
+      - name: Build Toka toolchain from main
         run: |
           set -euo pipefail
-          archive="$RUNNER_TEMP/$TOKA_ASSET"
-          curl --fail --location --retry 3 \
-            --output "$archive" \
-            "https://github.com/tokalang/toka/releases/download/$TOKA_VERSION/$TOKA_ASSET"
-          python3 -c 'import hashlib, pathlib, sys; actual = hashlib.sha256(pathlib.Path(sys.argv[1]).read_bytes()).hexdigest(); expected = sys.argv[2]; assert actual == expected, f"SHA-256 mismatch: {actual} != {expected}"' \
-            "$archive" "$TOKA_ASSET_SHA256"
-          tar -xzf "$archive" -C "$RUNNER_TEMP"
-          sdk="$RUNNER_TEMP/${TOKA_ASSET%.tar.gz}"
-          test -x "$sdk/bin/toka"
-          test -x "$sdk/bin/tokac"
-          test -f "$sdk/lib/sys/toka_rt.o"
+          git clone --depth 1 https://github.com/tokalang/toka.git "$RUNNER_TEMP/toka-source"
+          cmake -S "$RUNNER_TEMP/toka-source" -B "$RUNNER_TEMP/toka-source/build" -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            ${LLVM_DIR:+-DLLVM_DIR="$LLVM_DIR"} \
+            ${LLD_DIR:+-DLLD_DIR="$LLD_DIR"} \
+            ${ZSTD_LIBRARY:+-DZSTD_LIBRARY="$ZSTD_LIBRARY"} \
+            ${OPENSSL_ROOT_DIR:+-DOPENSSL_ROOT_DIR="$OPENSSL_ROOT_DIR"}
+          cmake --build "$RUNNER_TEMP/toka-source/build"
+          sdk="$RUNNER_TEMP/toka-sdk"
+          mkdir -p "$sdk/bin" "$sdk/lib/sys" "$sdk/lib/toolchain"
+          cp "$RUNNER_TEMP/toka-source/build/bin/tokac" "$sdk/bin/tokac"
+          cp "$RUNNER_TEMP/toka-source/build/bin/toka" "$sdk/bin/toka"
+          cp -r "$RUNNER_TEMP/toka-source/lib/"* "$sdk/lib/"
+          cp "$RUNNER_TEMP/toka-source/tools/scripts/toka_build.py" "$sdk/lib/toolchain/toka_build.py"
+          cp "$RUNNER_TEMP/toka-source/build/lib/sys/toka_rt.o" "$sdk/lib/sys/toka_rt.o"
           echo "$sdk/bin" >> "$GITHUB_PATH"
           echo "TOKA=$sdk/bin/toka" >> "$GITHUB_ENV"
           echo "TOKAC=$sdk/bin/tokac" >> "$GITHUB_ENV"
           echo "TOKA_LIB=$sdk/lib" >> "$GITHUB_ENV"
 
-      - name: Verify locked toolchain
+      - name: Verify toolchain
         run: |
           set -euo pipefail
-          "$TOKA" --version | grep -F "1.0.0-rc.4"
-          "$TOKAC" --version | grep -F "1.0.0-rc.4"
+          "$TOKA" --version
+          "$TOKAC" --version
           pkg-config --exists openssl
 
       - name: Run standalone qualification
@@ -111,30 +108,31 @@ jobs:
           set -euo pipefail
           export DEBIAN_FRONTEND=noninteractive
           sudo -E apt-get update -o Acquire::Retries=5
-          sudo apt-get install -y curl libssl-dev lsb-release pkg-config \
+          sudo apt-get install -y build-essential cmake curl ninja-build lsb-release pkg-config \
             software-properties-common wget
           wget --timeout=15 --tries=3 https://apt.llvm.org/llvm.sh
           chmod +x llvm.sh
           sudo -E ./llvm.sh 20
+          sudo apt-get install -y liblld-20-dev lld-20 libpolly-20-dev libzstd-dev libssl-dev
           echo "/usr/lib/llvm-20/bin" >> "$GITHUB_PATH"
           echo "CC=clang-20" >> "$GITHUB_ENV"
 
-      - name: Install locked Toka SDK
-        env:
-          TOKA_ASSET: toka-v1.0.0-rc.4-linux-x64.tar.gz
-          TOKA_ASSET_SHA256: fee16678f67bb88ace9b0f31603f9b56a24802de6d16a5bca60b3714dd4d30f6
+      - name: Build Toka toolchain from main
         run: |
           set -euo pipefail
-          archive="$RUNNER_TEMP/$TOKA_ASSET"
-          curl --fail --location --retry 3 \
-            --output "$archive" \
-            "https://github.com/tokalang/toka/releases/download/$TOKA_VERSION/$TOKA_ASSET"
-          python3 -c 'import hashlib, pathlib, sys; actual = hashlib.sha256(pathlib.Path(sys.argv[1]).read_bytes()).hexdigest(); expected = sys.argv[2]; assert actual == expected, f"SHA-256 mismatch: {actual} != {expected}"' \
-            "$archive" "$TOKA_ASSET_SHA256"
-          tar -xzf "$archive" -C "$RUNNER_TEMP"
-          sdk="$RUNNER_TEMP/${TOKA_ASSET%.tar.gz}"
-          test -x "$sdk/bin/tokac"
-          test -f "$sdk/lib/sys/toka_rt.o"
+          git clone --depth 1 https://github.com/tokalang/toka.git "$RUNNER_TEMP/toka-source"
+          cmake -S "$RUNNER_TEMP/toka-source" -B "$RUNNER_TEMP/toka-source/build" -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release
+          cmake --build "$RUNNER_TEMP/toka-source/build"
+          sdk="$RUNNER_TEMP/toka-sdk"
+          mkdir -p "$sdk/bin" "$sdk/lib/sys" "$sdk/lib/toolchain"
+          cp "$RUNNER_TEMP/toka-source/build/bin/tokac" "$sdk/bin/tokac"
+          cp "$RUNNER_TEMP/toka-source/build/bin/toka" "$sdk/bin/toka"
+          cp -r "$RUNNER_TEMP/toka-source/lib/"* "$sdk/lib/"
+          cp "$RUNNER_TEMP/toka-source/tools/scripts/toka_build.py" "$sdk/lib/toolchain/toka_build.py"
+          cp "$RUNNER_TEMP/toka-source/build/lib/sys/toka_rt.o" "$sdk/lib/sys/toka_rt.o"
+          echo "$sdk/bin" >> "$GITHUB_PATH"
+          echo "TOKA=$sdk/bin/toka" >> "$GITHUB_ENV"
           echo "TOKAC=$sdk/bin/tokac" >> "$GITHUB_ENV"
           echo "TOKA_LIB=$sdk/lib" >> "$GITHUB_ENV"
 

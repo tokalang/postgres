@@ -1,8 +1,11 @@
-import official/postgres::{PostgresConfig, PostgresPool, PostgresQueryLimits}
 import core/result::{Result}
+import core/task::{task_get_coro_handle}
+import official/postgres::{PostgresConfig, PostgresPool, PostgresQueryLimits}
 import std/net::{Ipv4Addr, SocketAddrV4, TcpListener, TcpStream}
-import std/task::{block_on, sleep_async}
+import std/task::{block_on, sleep_async, task_cancel}
 import std/vec::{Vec}
+
+extern fn toka_rt_test_task_has_active_timer_wait(*tcb: void) -> i32
 
 fn append_u32(out#: Vec<u8>, value: u32) {
     out#.push((value >> 24:u32) as u8)
@@ -111,6 +114,19 @@ fn pool_server_async(cede listener: TcpListener) -> async i32 {
     return 0
 }
 
+fn wait_for_pool_async(cede pool: PostgresPool) -> async i32 {
+    auto pool# = cede pool
+    auto acquired_outcome = pool#.acquire_async(1000:i32).await?
+    if acquired_outcome.is_none() {
+        return 0
+    }
+    auto acquired = acquired_outcome.unwrap()
+    if acquired.is_ok() {
+        return 1
+    }
+    return 2
+}
+
 fn pool_client_async(port: u16) -> async i32 {
     sleep_async(10:i64).await
     auto address = SocketAddrV4::new(Ipv4Addr::new(127:u8, 0:u8, 0:u8, 1:u8), port)
@@ -126,16 +142,37 @@ fn pool_client_async(port: u16) -> async i32 {
         auto exhausted = pool#.try_acquire_async().await
         if exhausted.is_ok() { return 4 }
         if !exhausted.unwrap_err().kind.as_str().equals("pool") { return 4 }
+        auto timed_out = pool#.acquire_async(5:i32).await
+        if timed_out.is_ok() { return 4 }
+        if !timed_out.unwrap_err().message.as_str().equals("PostgreSQL pool acquire timed out") { return 4 }
+        auto waiter = wait_for_pool_async(cede pool#.clone()).start
+        auto *waiter_tcb = task_get_coro_handle<i32>(waiter)
+        auto waited# = 0:i32
+        loop waited < 100:i32 {
+            if toka_rt_test_task_has_active_timer_wait(*waiter_tcb) != 0 {
+                break
+            }
+            sleep_async(2:i64).await
+            waited = waited + 1:i32
+        }
+        if toka_rt_test_task_has_active_timer_wait(*waiter_tcb) == 0 {
+            return 50
+        }
+        task_cancel<i32>(waiter)
+        match waiter.await? {
+            auto Option::Some('val) => { if 'val != 0:i32 { return 5 } }
+            auto Option::None => return 5
+        }
         auto result = lease#.simple_query_async("SELECT 1", PostgresQueryLimits::new(1:usize, 0:usize, 64:usize).unwrap()).await
-        if result.is_err() { return 5 }
-        if result.unwrap().len() != 1:usize { return 5 }
+        if result.is_err() { return 6 }
+        if result.unwrap().len() != 1:usize { return 6 }
     }
     auto reused = pool#.acquire_async(100:i32).await
-    if reused.is_err() { pool#.close(); return 6 }
+    if reused.is_err() { pool#.close(); return 7 }
     auto reused# = reused.unwrap()
     auto result = reused#.simple_query_async("SELECT 1", PostgresQueryLimits::new(1:usize, 0:usize, 64:usize).unwrap()).await
-    if result.is_err() { pool#.close(); return 7 }
-    if result.unwrap().len() != 1:usize { pool#.close(); return 7 }
+    if result.is_err() { pool#.close(); return 8 }
+    if result.unwrap().len() != 1:usize { pool#.close(); return 8 }
     pool#.close()
     return 0
 }

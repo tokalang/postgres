@@ -53,6 +53,8 @@ def resolve_toolchain(env: dict[str, str]) -> tuple[Path, Path, Path, Path, Path
         tokac = root / "build" / "bin" / "tokac"
         library = root / "lib"
         runtime = library / "sys" / "toka_rt.o"
+        if not runtime.is_file():
+            runtime = root / "build" / "lib" / "sys" / "toka_rt.o"
         build_driver = root / "tools" / "scripts" / "toka_build.py"
     else:
         if len(explicit_set) != len(explicit_keys):
